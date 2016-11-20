@@ -96,6 +96,7 @@ public class Log implements Serializable{
 	 */
 	public List<Operation> listNewer(TimestampVector sum){
 		//TODO MOLIVERASF
+		//TEST GIT CHANGE
 		// return generated automatically. Remove it when implementing your solution 
 		return null;
 	}
