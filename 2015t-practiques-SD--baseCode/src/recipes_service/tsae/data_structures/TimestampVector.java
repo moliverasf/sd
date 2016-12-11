@@ -42,6 +42,14 @@ public class TimestampVector implements Serializable{
 	
 	private ConcurrentHashMap<String, Timestamp> timestampVector= new ConcurrentHashMap<String, Timestamp>();
 	
+	/**
+	 * Copy-constructor
+	 * @param timestamVector: The vector from the object to be copied
+	 */
+	public TimestampVector(ConcurrentHashMap<String, Timestamp> timestampVector) {
+        this.timestampVector = new ConcurrentHashMap<>(timestampVector);
+    }
+	
 	public TimestampVector (List<String> participants){
 		// create and empty TimestampVector
 		for (Iterator<String> it = participants.iterator(); it.hasNext(); ){
@@ -55,7 +63,7 @@ public class TimestampVector implements Serializable{
 	 * Updates the timestamp vector with a new timestamp. 
 	 * @param timestamp
 	 */
-	public void updateTimestamp(Timestamp timestamp){
+	public synchronized void updateTimestamp(Timestamp timestamp){
 		//MOLIVERAF: Replace old timestamp of the relevant node for the one received
 		String node = timestamp.getHostid();
 		Timestamp oldTimestamp = timestampVector.get(node);		
@@ -66,7 +74,7 @@ public class TimestampVector implements Serializable{
 	 * merge in another vector, taking the elementwise maximum
 	 * @param tsVector (a timestamp vector)
 	 */
-	public void updateMax(TimestampVector tsVector){
+	public synchronized void updateMax(TimestampVector tsVector){
 		//MOLIVERASF: For each node, replace the current values for the 
 		//ones in tsVector that are newer
 		for (ConcurrentHashMap.Entry<String, Timestamp> node : timestampVector.entrySet()) {
@@ -95,7 +103,7 @@ public class TimestampVector implements Serializable{
 	 * After merging, local node will have the smallest timestamp for each node.
 	 *  @param tsVector (timestamp vector)
 	 */
-	public void mergeMin(TimestampVector tsVector){
+	public synchronized void mergeMin(TimestampVector tsVector){
 		//MOLIVERASF: For each node, replace the current values for the 
 		//ones in tsVector that are newer
 		for (ConcurrentHashMap.Entry<String, Timestamp> node : timestampVector.entrySet()) {
@@ -109,16 +117,10 @@ public class TimestampVector implements Serializable{
 	
 	/**
 	 * clone
+	 * MOLIVERASF: Added synchronized and called the new constructor-copy.
 	 */
-	public TimestampVector clone(){
-		//MOLIVERASF: Create new TimestampVector with the participants and
-		//            then use updateMax method to get values from this
-		
-		//TODO No idea if this works... Need to debug
-		List<String> participants = new ArrayList<String>(timestampVector.keySet());
-		TimestampVector clone = new TimestampVector(participants);
-		clone.updateMax(this);
-		return clone;
+	public synchronized TimestampVector clone(){
+		return new TimestampVector(this.timestampVector);
 	}
 	
 	/**
@@ -126,32 +128,28 @@ public class TimestampVector implements Serializable{
 	 */
 	public boolean equals(Object obj){
 		//MOLIVERASF: Check that tsVector has the same nodes and values than the attribute in this		
-		if(obj != null && obj instanceof Log){
+		/**if(obj != null && obj instanceof Log){
 			 return this.toString().equals(((TimestampVector)obj).toString());
 		}else{
 			return false;
-		}
+		}**/
 		
 		
-		/*boolean isEqual = true;
-		if(tsVector==null){
-			isEqual = false;
-		}else if(this.timestampVector.size() != tsVector.timestampVector.size()){
-			isEqual = false;
-		}
-		else{
-			//TODO: Not for phase 1: Check if instead of looping over the map I
-			//can use time timestampVector.equals(tsVector.timestampVector);
-			for (ConcurrentHashMap.Entry<String, Timestamp> node : timestampVector.entrySet()) {
-				Timestamp currentTS = node.getValue();
-				Timestamp paramTS = tsVector.getLast(node.getKey());
-			    if(currentTS.compare(paramTS) != 0){
-			    	isEqual = false;
-			    	break;
-			    }
+		boolean equals = false;
+		if(obj != null && this != obj){
+			if(obj instanceof TimestampVector){
+				TimestampVector tsVector = (TimestampVector) obj;
+				//if obj is a TimestampVector, check that attributes timestampVector to compare are not null
+				if(this.timestampVector != null && tsVector.timestampVector != null){
+					if(this.timestampVector == tsVector.timestampVector){
+						equals = true; //they point to the same ref.
+					}else{
+						equals = this.timestampVector.equals(tsVector.timestampVector);
+					}
+				}
 			}
 		}
-		return isEqual;*/
+		return equals;
 	}
 
 	/**

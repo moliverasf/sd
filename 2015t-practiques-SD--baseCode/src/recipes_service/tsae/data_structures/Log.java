@@ -21,6 +21,7 @@
 package recipes_service.tsae.data_structures;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.List;
@@ -63,7 +64,7 @@ public class Log implements Serializable{
 	 * @param op
 	 * @return true if op is inserted, false otherwise.
 	 */
-	public boolean add(Operation op){
+	public synchronized boolean add(Operation op){
 		//MOLIVERASF: Get the host, and add the operation if it's newer than the last
 		boolean isAdded = false;
 		String host = op.getTimestamp().getHostid();
@@ -94,11 +95,25 @@ public class Log implements Serializable{
 	 * @param sum
 	 * @return list of operations
 	 */
-	public List<Operation> listNewer(TimestampVector sum){
-		//TODO MOLIVERASF
-		//TEST GIT CHANGE
-		// return generated automatically. Remove it when implementing your solution 
-		return null;
+	public synchronized List<Operation> listNewer(TimestampVector sum){
+		List<Operation> newerOps = new ArrayList<Operation>();		
+		
+		for (String node : this.log.keySet()){
+			//Get the list of operations for the given node in the local log
+			List<Operation> operations = this.log.get(node);
+			
+			//Get the last last timestamp of the received summary for the same node
+			Timestamp timestampToCompare = sum.getLast(node);
+			
+			//Add each operation with time stamp newer than the last in the received summary to the final list 
+			for (Operation op : operations) {
+				if(op.getTimestamp().compare(timestampToCompare) > 0){
+					newerOps.add(op);
+				}
+			}
+		}
+		
+		return newerOps;	
 	}
 
 	/**

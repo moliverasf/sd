@@ -22,6 +22,7 @@ package recipes_service.tsae.sessions;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.TimerTask;
 
@@ -37,8 +38,8 @@ import recipes_service.communication.MessageOperation;
 import recipes_service.communication.MsgType;
 import recipes_service.data.AddOperation;
 import recipes_service.data.Operation;
+import recipes_service.data.OperationType;
 import recipes_service.tsae.data_structures.Log;
-import recipes_service.tsae.data_structures.Timestamp;
 import recipes_service.tsae.data_structures.TimestampMatrix;
 import recipes_service.tsae.data_structures.TimestampVector;
 
@@ -76,7 +77,7 @@ public class TSAESessionOriginatorSide extends TimerTask{
 			n=partnersTSAEsession.get(i);
 			sessionTSAE(n);
 		}
-	}		//TODO: Change the signature of the method to use Object and check the clas
+	}
 	
 	/**
 	 * This method perform a TSAE session
@@ -84,78 +85,121 @@ public class TSAESessionOriginatorSide extends TimerTask{
 	 * @param n
 	 */
 	private void sessionTSAE(Host n){
+		Socket socket = null;
 		if (n == null) return;
 
 		try {
-			Socket socket = new Socket(n.getAddress(), n.getPort());
+			socket = new Socket(n.getAddress(), n.getPort());
 			ObjectInputStream_DS in = new ObjectInputStream_DS(socket.getInputStream());
 			ObjectOutputStream_DS out = new ObjectOutputStream_DS(socket.getOutputStream());
-
-			// send localSummary and localAck
-			TimestampVector localSummary = serverData.getSummary();
-			TimestampMatrix localAck = serverData.getAck();
-			Log localLog = serverData.getLog();
 			
-			//TODO - Validate if we do have to increment time stamps, if yes
-			//	     is the code below the proper way to do it?
-			//       Should we take care of increase number sessions too?
-			Timestamp ts = new Timestamp(serverData.getId(), serverData.getNumberSessions()+1);
-			localSummary.updateTimestamp(ts);
-			//End of TODO
+			/**
+			 * Get local values copy:
+			 * Use synchronized statement to not block the full object all the time and only the
+			 * serverData attribute during the moment that we are getting its local values
+			 * and updating the ACK
+			 */
+			//System.out.println("Originator: Get local attributes");
+			TimestampVector localSummary;
+			TimestampMatrix localAck;
+			Log localLog = serverData.getLog(); //TODO Do we need to clone the log???
+			synchronized (serverData){
+				localSummary = serverData.getSummary().clone();				
+				TimestampMatrix localAckRef = serverData.getAck();
+				localAckRef.update(serverData.getId(), localSummary);
+				localAck = localAckRef.clone();
+			}
 			
+			
+			//Start the TSAE session sending the local summary and ACK to the partner
 			Message msg = new MessageAErequest(localSummary, localAck);
 			out.writeObject(msg);
 
-            // receive operations from partner
-			msg = (Message)in.readObject(); //TODO how do I know that I'm ready to read?
+            //Receive operations from partner, but store them in a temporary list
+			//to be added later to the host in a safe way
+			//System.out.println("Originator: Receive operations from the partner");
+			msg = (Message)in.readObject();
+			List<Operation> addOperations = new ArrayList<Operation>();
+			List<Operation> removeOperations = new ArrayList<Operation>();
 			while (msg.type() == MsgType.OPERATION){
-				//TODO validate this add Operation
 				MessageOperation msgOp = (MessageOperation)msg;
 				Operation op = msgOp.getOperation();
-				if(op instanceof AddOperation){ //TODO I think this must be synchronized
-					localLog.add(op);
-					localSummary.updateTimestamp(op.getTimestamp());
-					//TODO do we have to addRecipe like in the code below???
-					serverData.getRecipes().add(((AddOperation)op).getRecipe());	
-				}
 				
-				msg = (Message)in.readObject(); //next message
+				//Create a list of add and remove operations
+				if(op.getType() == OperationType.ADD){
+					addOperations.add(op);
+				}else if(op.getType() == OperationType.REMOVE){
+					removeOperations.add(op);
+				}else{
+					//If this code was supposed to evolve, here an error should be triggered
+				}
+				msg = (Message)in.readObject(); //next message	
 			}
 
+			
             // receive partner's summary and ack
+			//System.out.println("Originator: Receive partner summary and ACK");
 			if (msg.type() == MsgType.AE_REQUEST){
-				//TODO I think this part is done right, just worried about error
-				//     handling and that I need AE_REQUEST from the PartnerSide which
-				//     seems strange. But lets do the other part of the code
-				//TODO check instanceof or with the type is enough?
 				MessageAErequest msgRequest = (MessageAErequest)msg;
+				//System.out.println("Originator: Clone partner summary");
 				TimestampVector partnerSummary = msgRequest.getSummary().clone();
+				//System.out.println("Originator: Clone partner ACK");
+				TimestampMatrix partnerAck = msgRequest.getAck().clone();
+				
+				//For each host, send to the partner all the local operations newer
+				//than the last one registered in his summary
+				//System.out.println("Originator: Send newer operations to partner");
 				List<Operation> newOps = localLog.listNewer(partnerSummary);
 				for(Operation op : newOps){
 					msg = new MessageOperation(op);
 					out.writeObject(msg);
 				}
+			
 				
 				// send and "end of TSAE session" message
 				msg = new MessageEndTSAE();
 				out.writeObject(msg);
 				
 				// receive message to inform about the ending of the TSAE session
+				//System.out.println("Originator: Receive end of TSAE");
 				msg = (Message)in.readObject();
 				if(msg.type() == MsgType.END_TSAE){
-					//TODO - Not sure at all that the close socket goes here,
-					//	     specially being nested in the AE_REQUEST message
-					socket.close();
+					
+					//At this point, the TSAE sessions is completed and the communication 
+					//with the partner is over, it's the moment to update the local values
+					//protecting from concurrent access
+					synchronized(serverData){
+						//Add partner operations and their recipes to the local server
+						for(Operation op : addOperations){
+							serverData.getLog().add(op);
+							serverData.getRecipes().add(((AddOperation)op).getRecipe());
+						}
+						
+						//TODO implement remove operations method to process the list of this type of operation.
+						for(Operation op : removeOperations){
+						}
+						
+						//Update Summary and ACK
+						serverData.getSummary().updateMax(partnerSummary);
+						serverData.getAck().updateMax(partnerAck);
+						//TODO purge log in later phase						
+					}
 				}
 			}
+			socket.close();
 
-
-		} catch (ClassNotFoundException e) { 
-			// TODO Why in.readObject triggers this exception? What to do with it?
-			//e.printStackTrace();
-            //System.exit(1);
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+            System.exit(1);
 		}catch (IOException e) {
-			//TODO: send msg request can throw IO Exception, but what do we do? Print? Retry?
+			//e.printStackTrace();
+	    }finally{
+	    	//In case of other errors, it will always try to close the socket
+	    	try{
+	    		socket.close();
+	    	}catch(IOException e){
+	    		e.printStackTrace();
+	    	}
 	    }
 	
 	}

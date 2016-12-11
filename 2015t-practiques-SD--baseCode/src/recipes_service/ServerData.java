@@ -151,6 +151,7 @@ public class ServerData {
 	
 	public synchronized void removeRecipe(String recipeTitle){
 		System.err.println("Error: removeRecipe method (recipesService.serverData) not yet implemented");
+		//TODO Implement remove recipe method
 	}
 	
 

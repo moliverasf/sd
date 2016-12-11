@@ -23,6 +23,7 @@ package recipes_service.tsae.sessions;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 
 import communication.ObjectInputStream_DS;
@@ -35,6 +36,7 @@ import recipes_service.communication.MessageOperation;
 import recipes_service.communication.MsgType;
 import recipes_service.data.AddOperation;
 import recipes_service.data.Operation;
+import recipes_service.data.OperationType;
 import recipes_service.tsae.data_structures.Log;
 import recipes_service.tsae.data_structures.Timestamp;
 import recipes_service.tsae.data_structures.TimestampMatrix;
@@ -55,71 +57,117 @@ public class TSAESessionPartnerSide extends Thread{
 		this.serverData = serverData;
 	}
 
-	public void run() {
+	public synchronized void run() {
 				
 		try {
 			ObjectOutputStream_DS out = new ObjectOutputStream_DS(socket.getOutputStream());
 			ObjectInputStream_DS in = new ObjectInputStream_DS(socket.getInputStream());
-
+			
 			// receive originator's summary and ack
 			Message msg;
-			TimestampVector localSummary = serverData.getSummary();
-			TimestampMatrix localAck = serverData.getAck();
-			Log localLog = serverData.getLog();
-			
 			msg = (Message)in.readObject();			
 			if(msg.type() == MsgType.AE_REQUEST){
-				// send operations
-				//TODO I think this part is done right, just worried about error
-				//     handling and that I need AE_REQUEST from the PartnerSide which
-				//     seems strange. But lets do the other part of the code
-				//TODO check instanceof or with the type is enough?
+
 				MessageAErequest msgRequest = (MessageAErequest)msg;
-				TimestampVector partnerSummary = msgRequest.getSummary().clone();
-				List<Operation> newOps = localLog.listNewer(partnerSummary);
+				//System.out.println("Partner: Clone originator summary");
+				TimestampVector originatorSummary = msgRequest.getSummary().clone();
+				//System.out.println("Partner: Clone originator ACK");
+				TimestampMatrix originatorAck = msgRequest.getAck().clone();				
+				
+				/**
+				 * Get local values copy:
+				 * Use synchronized statement to not block the full object all the time and only the
+				 * serverData attribute during the moment that we are getting the local values
+				 * and updating the ACK
+				 */
+				//System.out.println("Partner: Get local attributes");
+				TimestampVector localSummary;
+				TimestampMatrix localAck;
+				Log localLog = serverData.getLog(); //TODO Do we need to clone the log???
+				synchronized (serverData){
+					localSummary = serverData.getSummary().clone();				
+					TimestampMatrix localAckRef = serverData.getAck();
+					localAckRef.update(serverData.getId(), localSummary);
+					localAck = localAckRef.clone();
+				}
+
+				//For each host, send to the originator all the local operations newer
+				//than the last one registered in his summary
+				//System.out.println("Partner: Send newer operations to originator");
+				List<Operation> newOps = localLog.listNewer(originatorSummary);
 				for(Operation op : newOps){
 					msg = new MessageOperation(op);
 					out.writeObject(msg);
 				}
 				
 				// send to originator: local's summary and ack
-				//TODO: Ensure like in the originator if increas Timestamp is necessary
-				//		here or somewhere else...
 				msg = new MessageAErequest(localSummary, localAck);
 				out.writeObject(msg);
 				
 	            // receive operations
-				msg = (Message)in.readObject(); //TODO how do I know that I'm ready to read?
+				//System.out.println("Partner: Receive operations from the originator");
+				msg = (Message)in.readObject();
+				List<Operation> addOperations = new ArrayList<Operation>();
+				List<Operation> removeOperations = new ArrayList<Operation>();
 				while (msg.type() == MsgType.OPERATION){
-					//TODO validate this add Operation
 					MessageOperation msgOp = (MessageOperation)msg;
 					Operation op = msgOp.getOperation();
-					if(op instanceof AddOperation){ //TODO I think this must be synchronized
-						localLog.add(op);
-						localSummary.updateTimestamp(op.getTimestamp());
-						//TODO do we have to addRecipe like in the code below???
-						serverData.getRecipes().add(((AddOperation)op).getRecipe());	
-					}
 					
-					msg = (Message)in.readObject(); //next message
+					//Create a list of add and remove operations
+					if(op.getType() == OperationType.ADD){
+						addOperations.add(op);
+					}else if(op.getType() == OperationType.REMOVE){
+						removeOperations.add(op);
+					}else{
+						//If this code was supposed to evolve, here an error should be triggered
+					}
+					msg = (Message)in.readObject(); //next message	
 				}
 				
+				
 				// receive message to inform about the ending of the TSAE session
+				//System.out.println("Partner: Receive end of TSAE");
 				if(msg.type() == MsgType.END_TSAE){
 					// send and "end of TSAE session" message
 					msg = new MessageEndTSAE();
 					out.writeObject(msg);
-				}
-				
-				
+					
+					//At this point, the TSAE session is completed and the communication 
+					//with the originator is over, it's the moment to update the local values
+					//protecting from concurrent access
+					synchronized(serverData){
+						//Add partner operations and their recipes to the local server
+						for(Operation op : addOperations){
+							serverData.getLog().add(op);
+							serverData.getRecipes().add(((AddOperation)op).getRecipe());
+						}
+						
+						//TODO implement remove operations method to process the list of this type of operation.
+						for(Operation op : removeOperations){
+						}
+						
+						//Update Summary and ACK
+						serverData.getSummary().updateMax(originatorSummary);
+						serverData.getAck().updateMax(originatorAck);
+						//TODO purge log in later phase						
+					}					
+					
+				}				
 			}			
-			socket.close();	//TODO - This here or after sending END_TSAE?	
+			socket.close();
+			
 		} catch (ClassNotFoundException e) {
-			// TODO What to do with this exception and why it can happen
-			//e.printStackTrace();
-            //System.exit(1);
+			e.printStackTrace();
+            System.exit(1);
 		}catch (IOException e) {
-			//TODO What to do with this exception?
+			//e.printStackTrace();
+	    }finally{
+	    	//In case of other errors, it will always try to close the socket
+	    	/**try{
+	    		socket.close();
+	    	}catch(IOException e){
+	    		e.printStackTrace();
+	    	}**/
 	    }
 	}
 }
